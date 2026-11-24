@@ -224,8 +224,8 @@ func (p *parser) parsePower() (node, error) {
 		base = factNode{base}
 	}
 	if _, ok := p.isOp('^'); ok {
-		p.next()
-		exp, err := p.parseUnary() // right associative, allows 2^-x
+		caret := p.next()
+		exp, err := p.parseExponent(caret)
 		if err != nil {
 			return nil, err
 		}
@@ -236,6 +236,57 @@ func (p *parser) parsePower() (node, error) {
 		base = binNode{'*', lead[i], base}
 	}
 	return base, nil
+}
+
+// parseExponent parses the right side of ^. It is right associative and
+// allows a sign (2^-x, 2^3^2), and a number written directly against a
+// variable stays in the exponent: e^2x is e^(2x) and e^-0.5t is e^(-0.5t),
+// just as e^kt is e^(k·t). A space ends the exponent (e^2 x is e²·x), and so
+// does anything that isn't a plain variable, so x^2sin(x), x^2(x+1) and
+// x^2e^x keep their usual meaning. Superscripts are always closed: x²y is x²·y.
+func (p *parser) parseExponent(caret token) (node, error) {
+	if op, ok := p.isOp('-', '+'); ok {
+		p.next()
+		x, err := p.parseExponent(caret)
+		if err != nil {
+			return nil, err
+		}
+		if op == '-' {
+			return negNode{x}, nil
+		}
+		return x, nil
+	}
+	start := p.i
+	num := p.peek()
+	x, err := p.parsePower()
+	if err != nil || num.kind != tokNum || p.i != start+1 || num.pos == caret.pos {
+		return x, err
+	}
+	t := p.peek()
+	if t.kind != tokIdent || t.pos != num.pos+len([]rune(num.text)) || !p.namesVariable(t.text) {
+		return x, nil
+	}
+	if after := p.toks[p.i+1]; after.kind == tokOp && after.op == '^' {
+		return x, nil
+	}
+	v, err := p.parsePower()
+	if err != nil {
+		return nil, err
+	}
+	return binNode{'*', x, v}, nil
+}
+
+// namesVariable reports whether an identifier is a variable, or splits into
+// names ending in one (pix → pi·x), rather than a function.
+func (p *parser) namesVariable(name string) bool {
+	switch p.sc.lookup(name) {
+	case nameVar:
+		return true
+	case nameFunc:
+		return false
+	}
+	parts := splitName([]rune(name), p.sc.lookup)
+	return len(parts) > 0 && p.sc.lookup(parts[len(parts)-1]) == nameVar
 }
 
 // parsePrimary returns the primary expression. When an unknown identifier
@@ -290,6 +341,9 @@ func (p *parser) parsePrimary() ([]node, node, error) {
 func (p *parser) parseIdent() ([]node, node, error) {
 	t := p.next()
 	name := t.text
+	if name == "table" {
+		return nil, nil, fmt.Errorf("table(…) must be an entry of its own")
+	}
 	switch p.sc.lookup(name) {
 	case nameVar:
 		p.sc.use(name)

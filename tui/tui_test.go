@@ -55,8 +55,8 @@ func press(t *testing.T, m Model, keys ...string) Model {
 }
 
 func TestRenderIsExactSize(t *testing.T) {
-	m := New(Options{Expressions: []string{"sin(x)", "1/x", "a = 2", "2+2", "bad("}})
-	for _, size := range [][2]int{{120, 40}, {80, 24}, {60, 20}, {200, 60}} {
+	m := New(Options{Expressions: []string{"sin(x)", "1/x", "a = 2", "2+2", "bad(", "table(sin)"}})
+	for _, size := range [][2]int{{120, 40}, {80, 24}, {60, 20}, {200, 60}, {70, 12}} {
 		m := sized(t, m, size[0], size[1])
 		out := m.render()
 		lines := strings.Split(out, "\n")

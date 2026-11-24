@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
+	"strings"
 )
 
 // Kind classifies a compiled entry.
@@ -17,7 +19,11 @@ const (
 	Function      // f(x) = x^2
 	Graph         // y = sin(x), or a bare expression in x
 	VLine         // x = 3
+	Table         // table(f(x)): a table of values
 )
+
+// TableRadius is how many rows a table shows on each side of its center.
+const TableRadius = 4
 
 // Options controls evaluation.
 type Options struct {
@@ -39,6 +45,12 @@ type Result struct {
 	// Literal is true when a Variable is defined by a plain number, so
 	// showing its value again would be redundant.
 	Literal bool
+
+	// For Table entries: the tabulated function, the x step between rows
+	// and the expression's source text for the column header.
+	TableFn func(x float64) float64
+	Step    float64
+	Label   string
 }
 
 // Plottable reports whether the result draws something on a graph.
@@ -53,6 +65,7 @@ const (
 	stVLine
 	stVar
 	stFunc
+	stTable
 )
 
 type stmt struct {
@@ -66,6 +79,12 @@ type stmt struct {
 	deps  map[string]bool
 	usesX bool
 	eval  evalFn
+
+	// table(expr, step)
+	label    string
+	stepToks []token
+	stepAst  node
+	step     float64
 }
 
 type evalFn func(args []float64) float64
@@ -110,6 +129,9 @@ func Compile(srcs []string, opts Options) []Result {
 		if s.kind != stFunc {
 			params = []string{"x"}
 		}
+		if s.kind == stTable {
+			tableShorthand(s, userFuncs)
+		}
 		sc := newScope(params, userVars, userFuncs)
 		ast, err := parseBody(s.body, sc)
 		if err != nil {
@@ -119,6 +141,20 @@ func Compile(srcs []string, opts Options) []Result {
 			continue
 		}
 		s.ast, s.deps, s.usesX = ast, sc.deps, sc.usedParams["x"]
+		if s.stepToks != nil {
+			ssc := newScope([]string{"x"}, userVars, userFuncs)
+			if s.stepAst, err = parseBody(s.stepToks, ssc); err != nil {
+				s.err = fmt.Errorf("table step: %w", err)
+				continue
+			}
+			if ssc.usedParams["x"] {
+				s.err = fmt.Errorf("table step must be a constant")
+				continue
+			}
+			for d := range ssc.deps {
+				s.deps[d] = true
+			}
+		}
 		switch {
 		case s.kind == stVar && s.usesX:
 			s.err = fmt.Errorf("'%s' can't depend on x; did you mean %s(x) = …?", s.name, s.name)
@@ -180,6 +216,9 @@ func splitStatement(src string) *stmt {
 		}
 	}
 	if eq < 0 {
+		if t, ok := splitTable(src, toks); ok {
+			return t
+		}
 		return &stmt{kind: stExpr, body: toks}
 	}
 
@@ -228,6 +267,78 @@ func splitStatement(src string) *stmt {
 	return s
 }
 
+// splitTable recognizes an entry of the form table(expr) or
+// table(expr, step).
+func splitTable(src string, toks []token) (*stmt, bool) {
+	if len(toks) < 4 || toks[0].kind != tokIdent || toks[0].text != "table" || toks[1].kind != tokLParen {
+		return nil, false
+	}
+	// The parenthesis opened after "table" must close at the very end.
+	var commas []int
+	depth, end := 0, -1
+	for i := 1; i < len(toks); i++ {
+		switch toks[i].kind {
+		case tokLParen:
+			depth++
+		case tokRParen:
+			depth--
+			if depth == 0 && end < 0 {
+				end = i
+			}
+		case tokComma:
+			if depth == 1 && end < 0 {
+				commas = append(commas, i)
+			}
+		}
+	}
+	if end != len(toks)-2 {
+		return nil, false // e.g. table(x) + 1, left for the parser to reject
+	}
+	s := &stmt{kind: stTable}
+	if len(commas) > 1 {
+		s.err = fmt.Errorf("table takes an expression and an optional step")
+		return s, true
+	}
+	eof := token{kind: tokEOF, pos: toks[end].pos}
+	bodyEnd := end
+	if len(commas) == 1 {
+		bodyEnd = commas[0]
+		s.stepToks = append(slices.Clone(toks[bodyEnd+1:end]), eof)
+		if len(s.stepToks) == 1 {
+			s.err = fmt.Errorf("missing table step after ','")
+		}
+	}
+	s.body = append(slices.Clone(toks[2:bodyEnd]), eof)
+	if len(s.body) == 1 {
+		s.err = fmt.Errorf("table needs an expression, like table(f(x))")
+	}
+	rs := []rune(src)
+	s.label = strings.TrimSpace(string(rs[toks[2].pos:toks[bodyEnd].pos]))
+	return s, true
+}
+
+// tableShorthand turns table(f) into table(f(x)) when f is a function of
+// one argument.
+func tableShorthand(s *stmt, userFuncs map[string]int) {
+	if len(s.body) != 2 || s.body[0].kind != tokIdent {
+		return
+	}
+	name := s.body[0].text
+	b, isBuiltin := builtins[name]
+	if userFuncs[name] != 1 && !(isBuiltin && b.minArgs <= 1 && (b.maxArgs < 0 || b.maxArgs >= 1)) {
+		return
+	}
+	pos := s.body[0].pos
+	s.body = []token{
+		s.body[0],
+		{kind: tokLParen, pos: pos},
+		{kind: tokIdent, text: "x", pos: pos},
+		{kind: tokRParen, pos: pos},
+		{kind: tokEOF, pos: pos},
+	}
+	s.label = name + "(x)"
+}
+
 func parseParams(toks []token) ([]string, error) {
 	var params []string
 	seen := map[string]bool{}
@@ -257,6 +368,9 @@ func parseParams(toks []token) ([]string, error) {
 }
 
 func checkDefName(name string) error {
+	if name == "table" {
+		return fmt.Errorf("'table' is reserved")
+	}
 	if _, ok := constants[name]; ok {
 		return fmt.Errorf("'%s' is a built-in constant", name)
 	}
@@ -301,6 +415,8 @@ func (c *compiler) result(s *stmt) Result {
 			r.Fn = unary(s.eval)
 		}
 		return r
+	case stTable:
+		return Result{Kind: Table, TableFn: unary(s.eval), Step: s.step, Label: s.label}
 	}
 	return Result{Kind: Invalid, Err: fmt.Errorf("unsupported entry")}
 }
@@ -346,6 +462,20 @@ func (c *compiler) compileStmt(s *stmt) error {
 	if err != nil {
 		s.err = err
 		return err
+	}
+	if s.kind == stTable {
+		s.step = 1
+		if s.stepAst != nil {
+			sf, err := c.compile(s.stepAst, nil)
+			if err != nil {
+				s.err = err
+				return err
+			}
+			if s.step = sf(nil); !(s.step > 0) || math.IsInf(s.step, 0) {
+				s.err = fmt.Errorf("table step must be a positive number")
+				return s.err
+			}
+		}
 	}
 	if s.kind == stVar {
 		// Variables are constants: evaluate once.

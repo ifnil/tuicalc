@@ -84,9 +84,29 @@ func TestGraphs(t *testing.T) {
 		{"|x|", -4, 4},
 		{"y = 3", 100, 3},
 		{"x!", 4, 24},
+		// A number against a variable stays in the exponent.
+		{"e^2x", 2, math.Exp(4)},
+		{"e^-0.5x", 2, math.Exp(-1)},
+		{"e^.5x", 2, math.E},
+		{"2^3x", 1, 8},
+		{"e^2pix", 1, math.Exp(2 * math.Pi)},
+		{"e^kx", 2, math.Exp(6)},
+		{"e^2kx", 1, math.Exp(6)},
+		{"2^-x^2", 2, 1.0 / 16},
+		{"e^2x + 1", 0, 2},
+		// ...but a space, function, paren, power or superscript ends it.
+		{"e^2 x", 2, 2 * math.Exp(2)},
+		{"x^2sin(x)", math.Pi / 2, math.Pi * math.Pi / 4},
+		{"x^2sin x", math.Pi / 2, math.Pi * math.Pi / 4},
+		{"x^2(x+1)", 2, 12},
+		{"x^2e^x", 1, math.E},
+		{"x^2|x|", -2, 8},
+		{"x²k", 2, 12},
+		{"x^(2)k", 2, 12},
+		{"2^3!x", 1, 64},
 	}
 	for _, c := range cases {
-		r := eval1(t, c.src)
+		r := Compile([]string{c.src, "k = 3"}, Options{})[0]
 		if r.Err != nil {
 			t.Errorf("%q: unexpected error %v", c.src, r.Err)
 			continue
@@ -145,6 +165,16 @@ func TestDefinitions(t *testing.T) {
 	}
 	if rs[9].Value != 21 {
 		t.Errorf("af(2) = %v", rs[9].Value)
+	}
+}
+
+func TestExponentKeepsCoefficient(t *testing.T) {
+	rs := Compile([]string{"C(t) = 0.10e^0.0576t", "C(25)"}, Options{})
+	if rs[1].Err != nil {
+		t.Fatal(rs[1].Err)
+	}
+	if want := 0.10 * math.Exp(0.0576*25); math.Abs(rs[1].Value-want) > 1e-12 {
+		t.Errorf("C(25) = %v, want %v", rs[1].Value, want)
 	}
 }
 
@@ -264,6 +294,65 @@ func TestNiceStep(t *testing.T) {
 	for raw, want := range cases {
 		if got := NiceStep(raw); math.Abs(got-want) > 1e-12 {
 			t.Errorf("NiceStep(%v) = %v, want %v", raw, got, want)
+		}
+	}
+}
+
+func TestTable(t *testing.T) {
+	rs := Compile([]string{
+		"f(x) = x^2",
+		"table(f(x))",
+		"table(f)",
+		"table(sin)",
+		"table(2x + 1, 0.5)",
+		"table(f(x), h)",
+		"h = 0.25",
+	}, Options{})
+	for i, r := range rs {
+		if r.Err != nil {
+			t.Fatalf("entry %d: %v", i, r.Err)
+		}
+	}
+	cases := []struct {
+		i            int
+		label        string
+		step, x, out float64
+	}{
+		{1, "f(x)", 1, 3, 9},
+		{2, "f(x)", 1, 3, 9},
+		{3, "sin(x)", 1, 0, 0},
+		{4, "2x + 1", 0.5, 2, 5},
+		{5, "f(x)", 0.25, 2, 4},
+	}
+	for _, c := range cases {
+		r := rs[c.i]
+		if r.Kind != Table || r.Fn != nil || r.Plottable() {
+			t.Errorf("entry %d: kind %v, should be a non-plotting table", c.i, r.Kind)
+			continue
+		}
+		if r.Label != c.label || r.Step != c.step || r.TableFn(c.x) != c.out {
+			t.Errorf("entry %d: label %q step %v f(%v)=%v", c.i, r.Label, r.Step, c.x, r.TableFn(c.x))
+		}
+	}
+}
+
+func TestTableErrors(t *testing.T) {
+	cases := map[string]string{
+		"table()":            "needs an expression",
+		"table(x, )":         "missing table step",
+		"table(x, 1, 2)":     "optional step",
+		"table(x, 0)":        "positive",
+		"table(x, x)":        "must be a constant",
+		"table(q(x))":        "unknown function 'q'",
+		"table(x) + 1":       "entry of its own",
+		"y = table(x)":       "entry of its own",
+		"table = 3":          "reserved",
+		"table(x, unknown1)": "table step: unknown variable",
+	}
+	for src, want := range cases {
+		r := eval1(t, src)
+		if r.Err == nil || !strings.Contains(r.Err.Error(), want) {
+			t.Errorf("%q: got %v, want error containing %q", src, r.Err, want)
 		}
 	}
 }

@@ -849,7 +849,8 @@ func (m Model) renderPlot(r rect) string {
 	if m.focus == focusGraph {
 		bs, ts = m.th.borderFocused, m.th.titleFocused
 	}
-	return box("Graph", m.th.muted.Render(angle), strings.Split(chart, "\n"), r.w, r.h, bs, ts)
+	out := box("Graph", m.th.muted.Render(angle), strings.Split(chart, "\n"), r.w, r.h, bs, ts)
+	return m.overlayTable(out, f, r.w)
 }
 
 func (m Model) renderStatus() string {
@@ -895,6 +896,10 @@ func (m Model) renderStatus() string {
 		if m.traceNote != "" {
 			body += "  " + m.th.accent.Render(m.traceNote)
 		}
+	case m.focus == focusList && m.isTable(m.sel):
+		r := m.results[m.sel]
+		body = m.th.muted.Render(fmt.Sprintf("table around x = %s, step %s · trace a curve (t) to move it",
+			expr.FormatPrec(m.tableCenter(), 8), expr.FormatNumber(r.Step)))
 	case m.hoverOK:
 		body = m.th.muted.Render(fmt.Sprintf("x = %s  y = %s",
 			formatCoord(m.hoverX, m.vp.sx), formatCoord(m.hoverY, m.vp.sy)))

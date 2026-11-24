@@ -38,6 +38,10 @@ func (m Model) listLines(width int) []listLine {
 			swatch = m.th.curve(e.color).Render("○")
 		case r.Plottable():
 			swatch = m.th.curve(e.color).Render("●")
+		case r.Kind == expr.Table && e.hidden:
+			swatch = m.th.faint.Render("≡")
+		case r.Kind == expr.Table:
+			swatch = m.th.accent.Render("≡")
 		case r.Kind == expr.Invalid && !blank:
 			swatch = m.th.errText.Render("!")
 		}
@@ -124,10 +128,13 @@ func (m Model) helpLines(boxWidth int) []string {
 		ex("a = 3", "define a variable used by other entries"),
 		ex("x = 2", "vertical line"),
 		ex("2^10 / 3", "evaluate a number"),
+		ex("table(f(x))", "table of values around the trace cursor, or x = 0"),
+		ex("table(x^2, 0.5)", "same, with a step of 0.5 (default 1)"),
 		"",
 		head.Render("Syntax"),
 		m.th.muted.Render("  + - * / ^   % mod   ! factorial   |x| abs"),
 		m.th.muted.Render("  implicit products: 2x  3(x+1)  xsin(x)  2πx  sin x"),
+		m.th.muted.Render("  e^2x is e^(2x), but e^2 x and x^2e^x are e²·x and x²·eˣ"),
 		"",
 		head.Render("Functions"),
 	}
